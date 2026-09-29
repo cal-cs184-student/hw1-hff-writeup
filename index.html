@@ -18,10 +18,20 @@
 
 			img {
 				display: inline-block;
+				border-radius: 4px;
+				transition: transform 0.25s ease, box-shadow 0.25s ease;
+			}
+
+			img:hover {
+				transform: scale(1.04);
+				box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+				position: relative;
+				z-index: 1;
 			}
 
 			body {
 				font-family: 'Inter', sans-serif;
+				line-height: 1.5;
 			}
 
 			table {
@@ -40,16 +50,29 @@
 				width: 100%;
 			}
 
+			table.tradeoffs td, table.tradeoffs th {
+				border: 1px solid #ddd;
+				padding: 6px 10px;
+				text-align: left;
+			}
+
 			code {
 				background: #f2f2f2;
 				padding: 1px 4px;
 				border-radius: 3px;
 			}
+
+			@media print {
+				img:hover {
+					transform: none;
+					box-shadow: none;
+				}
+			}
 		</style>
 	</head>
 	<body>
 		<div class="container">
-		<h1>CS184/284A Spring 2026 Homework 1 Write-Up</h1>
+		<h1>CS184/284A Fall 2026 Homework 1 Write-Up</h1>
 		<div style="text-align: center;">Names: Junehee &amp; Jeslyn</div>
 
 		<br>
@@ -67,27 +90,30 @@
 
 		<h2>Overview</h2>
 		<p>
-		In this homework we built a basic rasterizer that can draw SVG files. We implemented triangle rasterization, supersampling for antialiasing, 2D transforms, color interpolation with barycentric coordinates, and texture mapping with pixel sampling and mipmapping. The biggest takeaway for us was that most differentiating artifacts (jaggies, thin triangles breaking up, moir&eacute; in textures) come from aliasing, and most of the assignment was different ways to deal with it.
+		In this homework we built a rasterizer that draws SVG files. We implemented triangle rasterization, supersampling for antialiasing, transforms, color interpolation with barycentric coordinates, and texture mapping with pixel sampling and mipmaps. The main thing we learned is that most of the ugly artifacts (jaggies, thin triangles breaking up, noisy textures when they're shrunk) come from aliasing, and a lot of the assignment was different ways to fix it, each trading some speed or memory for smoother results.
+		</p>
+		<p>
+		Some problems we ran into: after adding supersampling, the black border in <code>test4.svg</code> disappeared at higher sample rates. <code>fill_pixel</code> was still only writing one sample per pixel, so we changed it to fill every sub-sample of the pixel. In <code>test7.svg</code> we also had a dotted crack along an edge shared by two triangles, because rounding error made both triangles skip samples exactly on that edge. Doing the edge math in doubles with a tiny tolerance fixed it.
 		</p>
 
 		<h2>Task 1: Drawing Single-Color Triangles</h2>
 		<p>
-		To rasterize a triangle, we first find its bounding box (min/max of the vertex x and y, clamped to the screen). Then for every pixel in the box we check whether the pixel center \((x + 0.5, y + 0.5)\) is inside the triangle using the three edge functions (line tests). If the point is on the same side of all three edges, it's inside, and we fill it with the triangle's color. We divide by the triangle's signed area so it works for both clockwise and counterclockwise vertex orders, and we count points exactly on an edge as inside.
+		First we find the triangle's bounding box by taking the min and max of the vertex x and y values, clamped to the screen. Then for every pixel in the box we test the pixel center \((x + 0.5, y + 0.5)\) against the three edges using the line test from lecture. If the point is on the inside of all three edges, we fill the pixel with the triangle's color. We divide by the triangle's signed area so it doesn't matter whether the vertices are clockwise or counterclockwise, and points exactly on an edge count as inside.
 		</p>
 		<p>
-		This is no worse than checking every sample in the bounding box because that's exactly what it does: each pixel in the bounding box gets checked once with a constant amount of work, and nothing outside the box is checked.
+		Our algorithm is no worse than checking every sample in the bounding box because that's exactly what it does. We only loop over pixels in the bounding box, and each one takes a constant amount of work.
 		</p>
 		<figure>
 			<img src="assets/t1_test4.png" alt="test4 with pixel inspector" style="width:70%"/>
-			<figcaption><code>basic/test4.svg</code>, default settings (1 sample per pixel). The pixel inspector is on the bottom tip of the thin magenta triangle: each pixel is either fully in or fully out, so the slanted edge turns into a hard staircase of jaggies.</figcaption>
+			<figcaption><code>basic/test4.svg</code>, default settings. The pixel inspector is on the tip of the thin magenta triangle, where the edge turns into jaggies and the tip breaks apart.</figcaption>
 		</figure>
 
 		<h2>Task 2: Antialiasing by Supersampling</h2>
 		<p>
-		For supersampling with sample rate \(N\), we take an \(\sqrt{N} \times \sqrt{N}\) grid of samples inside each pixel instead of just the center. We changed the <code>sample_buffer</code> to hold <code>width * height * sample_rate</code> colors, so every pixel has its own set of sub-samples. <code>rasterize_triangle</code> now runs the inside test on each sub-sample, <code>fill_pixel</code> (used for lines and points) sets all sub-samples of a pixel to the same color, and <code>resolve_to_framebuffer</code> averages each pixel's sub-samples to get the final color. We also had to fix the buffer resizing in <code>set_sample_rate</code> and <code>set_framebuffer_target</code> to include the sample rate.
+		Supersampling is useful because one sample per pixel can't capture sharp triangle edges, so we get jaggies and thin triangles breaking apart. With more samples per pixel and averaging them, edge pixels get a color based on how much of the pixel is covered.
 		</p>
 		<p>
-		Supersampling is useful because edge pixels get a color based on how much of the pixel the triangle actually covers, instead of all-or-nothing. That smooths out jaggies and keeps thin triangles from disappearing.
+		For sample rate \(N\), we split each pixel into a \(\sqrt{N} \times \sqrt{N}\) grid and test the center of each little square. We made <code>sample_buffer</code> store <code>width * height * sample_rate</code> colors (and fixed <code>set_sample_rate</code> and <code>set_framebuffer_target</code> to resize it that way). <code>rasterize_triangle</code> now does the inside test on every sub-sample and writes to that sub-sample's spot, and <code>fill_pixel</code> writes the same color to all sub-samples so lines and points still work. Then <code>resolve_to_framebuffer</code> averages each pixel's sub-samples to get the final color. That averaging is what antialiases the triangles.
 		</p>
 		<div style="display: flex; flex-direction: column; align-items: center;">
 			<table>
@@ -99,25 +125,25 @@
 			</table>
 		</div>
 		<p>
-		At sample rate 1, the skinny magenta triangle's tip breaks into disconnected pixels because the triangle is thinner than a pixel and misses most pixel centers. At rate 4 more of it shows up as lighter pink partial coverage, and at rate 16 the tip is continuous and fades out smoothly.
+		With the pixel inspector on the skinny magenta tip, at rate 1 the tip breaks into separate pixels because it's thinner than a pixel and misses most pixel centers. At rate 4 some sub-samples hit the triangle, so those pixels turn light pink and the tip is more connected. At rate 16 the tip is a smooth line that fades out, since the coverage estimate is much more accurate.
 		</p>
 
 		<h2>Task 3: Transforms</h2>
 		<figure>
 			<img src="assets/t3_my_robot.png" alt="my_robot.svg" style="width:50%"/>
-			<figcaption><code>my_robot.svg</code>: pink cubeman mid-dance.</figcaption>
+			<figcaption><a href="my_robot.svg"><code>my_robot.svg</code></a>: pink cubeman mid-dance.</figcaption>
 		</figure>
 		<p>
-		Our cubeman is pink because he's a ballerina. He has an arm and leg both sticking out to show his pirouette. Each arm and leg is a nested group, so we rotate the upper arm around the shoulder and then rotate the forearm inside that group, which keeps the forearm attached at the elbow even though both pieces are rotated. The swept-out leg is a single rotation applied to the whole leg group around the hip, so both pieces of the leg move together. The head is a square rotated 45&deg;.
+		We made cubeman pink and had him dance, with one arm straight out, the other arm bent up over his head, and one leg kicked out to the side while he balances on the other. The arms and legs are nested groups, so we rotated the upper arm around the shoulder and then rotated the forearm inside that group, which keeps it attached at the elbow. For the kicked leg we just rotated the whole leg group around the hip.
 		</p>
 
 		<h2>Task 4: Barycentric coordinates</h2>
 		<p>
-		Barycentric coordinates \((\alpha, \beta, \gamma)\) describe a point in a triangle as a weighted mix of the three vertices, where the weights add up to 1. Each weight is how close the point is to that vertex: it's 1 at the vertex and 0 on the opposite edge. We can use the same weights to blend anything stored at the vertices, like colors: \(C = \alpha C_0 + \beta C_1 + \gamma C_2\).
+		Barycentric coordinates \((\alpha, \beta, \gamma)\) describe a point inside a triangle as a weighted mix of the three vertices, where the weights add up to 1. Each weight is 1 at its own vertex and goes down to 0 at the opposite edge. You can also think of each one as the area of the small triangle across from that vertex divided by the whole triangle's area. We get them from the same edge functions as in Task 1, and then blend the vertex colors with them: \(C = \alpha C_0 + \beta C_1 + \gamma C_2\).
 		</p>
 		<figure>
 			<img src="assets/t4_rgb.png" alt="RGB triangle" style="width:50%"/>
-			<figcaption>A triangle with red, green and blue corners. Each point's color is just its barycentric weights used as (R, G, B).</figcaption>
+			<figcaption>A triangle with red, green and blue vertices. Each point's color is its barycentric weights used as (R, G, B), so it blends smoothly between the corners.</figcaption>
 		</figure>
 		<figure>
 			<img src="assets/t4_test7.png" alt="test7" style="width:50%"/>
@@ -126,11 +152,11 @@
 
 		<h2>Task 5: "Pixel sampling" for texture mapping</h2>
 		<p>
-		Pixel sampling is how we pick a texture color for a screen sample. We use the barycentric coordinates to interpolate the vertices' \((u, v)\) coordinates, which gives a point in the texture, and then look up the color there.
+		Pixel sampling is how we choose a texture color for a point on the screen. For each sample inside the triangle, we use the barycentric coordinates to interpolate the vertices' \((u, v)\) coordinates, scale them by the texture's width and height, and look up the color there. Since that point usually lands between texels, we need a rule for which texel(s) to use:
 		</p>
 		<ul>
-			<li><b>Nearest:</b> use the single texel closest to \((u, v)\). It's fast but can look blocky or broken up.</li>
-			<li><b>Bilinear:</b> take the 4 texels around \((u, v)\) and blend them based on how close the point is to each one. It's smoother but takes 4 lookups instead of 1.</li>
+			<li><b>Nearest:</b> just take the closest texel. Fast, but it can look blocky or broken up.</li>
+			<li><b>Bilinear:</b> take the 4 closest texels and blend them based on how close the point is to each (two horizontal lerps, then one vertical lerp). Smoother, but it takes 4 lookups.</li>
 		</ul>
 		<div style="display: flex; flex-direction: column; align-items: center;">
 			<table>
@@ -145,11 +171,31 @@
 			</table>
 		</div>
 		<p>
-		We used the Berkeley seal texture, with the inspector over the white "BERKELEY" lettering on the blue band. The seal is shrunk on screen, so the letters are only a few pixels wide. With nearest at 1 sample per pixel, the letters are harsh and broken up into scattered white pixels, since each pixel either lands on a white texel or misses it. Bilinear at 1 sample per pixel gives smoother, more connected strokes with in-between blue-white shades, because it blends the 4 nearest texels. At 16 samples per pixel both look smooth and almost the same, since averaging 16 lookups per pixel already smooths things out. The two methods differ the most when the texture has thin, high-contrast details (like white text on dark blue) and the texture is stretched or shrunk a lot relative to the screen.
+		We put the pixel inspector on the white "BERKELEY" letters on the seal. With nearest at 1 sample per pixel, the letters look choppy and broken up, since each pixel either hits a white texel or misses it. Bilinear at 1 sample per pixel looks a lot smoother and the letters are more connected. At 16 samples per pixel both look pretty similar, because supersampling already averages out a lot of the difference. The two methods differ the most when the texture has thin, high-contrast details and it's magnified or shrunk a lot, since that's when neighboring texels are very different and nearest jumps between them.
 		</p>
 
 		<h2>Task 6: "Level Sampling" with mipmaps for texture mapping</h2>
-		
+		<p>
+		Level sampling picks which mipmap level to read from. A mipmap is the texture plus a bunch of smaller, pre-averaged copies (each half the size of the one before). When a texture is shrunk on screen, one pixel covers lots of texels, so reading from the full-size texture aliases, and a smaller level works better. To pick the level, we also compute the \((u, v)\) at \((x+1, y)\) and \((x, y+1)\) and check how many texels we move per screen pixel. The level is \(\log_2\) of the bigger of those two. <code>L_ZERO</code> always uses level 0, <code>L_NEAREST</code> rounds to the closest level, and <code>L_LINEAR</code> blends the two closest levels.
+		</p>
+		<p>
+		For the tradeoffs: bilinear pixel sampling is a little slower than nearest (4 lookups instead of 1) but doesn't need more memory, and it helps most when textures are magnified. Mipmapping needs about 1/3 extra memory for the smaller levels and a bit of extra math per sample, but it's really good at fixing aliasing on shrunk textures, though it can make things blurrier. Supersampling antialiases the most, since it also fixes triangle edges, but it's the slowest and uses the most memory because everything scales with the sample rate.
+		</p>
+		<div style="display: flex; flex-direction: column; align-items: center;">
+			<table>
+				<tr>
+					<td><img src="assets/t6_lzero_pnearest.png" alt="L_ZERO P_NEAREST"/><figcaption><code>L_ZERO</code> + <code>P_NEAREST</code></figcaption></td>
+					<td><img src="assets/t6_lzero_plinear.png" alt="L_ZERO P_LINEAR"/><figcaption><code>L_ZERO</code> + <code>P_LINEAR</code></figcaption></td>
+				</tr>
+				<tr>
+					<td><img src="assets/t6_lnearest_pnearest.png" alt="L_NEAREST P_NEAREST"/><figcaption><code>L_NEAREST</code> + <code>P_NEAREST</code></figcaption></td>
+					<td><img src="assets/t6_lnearest_plinear.png" alt="L_NEAREST P_LINEAR"/><figcaption><code>L_NEAREST</code> + <code>P_LINEAR</code></figcaption></td>
+				</tr>
+			</table>
+		</div>
+		<p>
+		We used an Aikatsu Stars! poster and mapped it onto a warped, pillow-shaped grid like the ones in <code>svg/texmap/</code>, so the middle is about full size while the edges get squished. The squished edges and the thin plaid lines on the outfits show the differences best. With <code>L_ZERO</code> + <code>P_NEAREST</code>, the plaid and the squished edges look jaggy and noisy because every pixel reads one texel from the full-size image. <code>P_LINEAR</code> softens it a little. <code>L_NEAREST</code> reads from smaller levels where the image is squished, so those parts look less noisy but a bit blurrier. <code>L_NEAREST</code> + <code>P_LINEAR</code> looks the smoothest overall.
+		</p>
 
 		</div>
 	</body>
